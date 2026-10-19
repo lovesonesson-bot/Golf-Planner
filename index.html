@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f7d4f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<title>Strategy Golf Planner</title>
+<style>
+:root{--bg:#f4f6f2;--fg:#1b241d;--card:#fff;--mut:#667066;--ac:#2f7d4f;--bd:#dce2db;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#111611;--fg:#e8efe9;--card:#1a211b;--mut:#9aa89c;--ac:#5bbf84;--bd:#2c372d;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+select,input,button{font:inherit;color:var(--fg)}
+.top{display:flex;gap:8px;align-items:center;padding:8px 10px}
+.top b{flex:1;text-align:center}
+button,select{background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:7px 13px}
+button.on{background:var(--ac);border-color:var(--ac);color:#fff}
+#map{height:56vh;min-height:320px;background:#223}
+main{max-width:520px;margin:0 auto;padding:10px;display:grid;gap:10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.row{display:flex;align-items:center;gap:10px;margin:6px 0}
+.row input[type=range]{flex:1;accent-color:var(--ac)}
+.row span{min-width:96px;text-align:right;font-variant-numeric:tabular-nums;font-size:13px}
+#wa{display:inline-block;font-size:26px;transition:transform .2s;margin-right:8px;color:var(--ac)}
+.big{display:flex;align-items:center}
+.mut{color:var(--mut);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:4px;text-align:left}
+td input{width:60px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:4px}
+details summary{cursor:pointer;font-weight:600}
+</style>
+</head>
+<body>
+<div class="top">
+  <button id="hp">‹</button><b id="hl">Hole 1</b><button id="hn">›</button>
+  <select id="club"></select>
+</div>
+<div id="map"></div>
+<main>
+  <div class="chips">
+    <button id="m-aim" class="on">Aim</button><button id="m-ball">Ball</button>
+    <button id="m-tee">Set tee</button><button id="m-green">Set green</button>
+    <button id="land">Ball → landing</button>
+  </div>
+  <div class="card" id="hud"></div>
+  <div class="card">
+    <div class="big"><span id="wa">↑</span><div><b id="wt">Loading wind…</b><div class="mut" id="wd"></div></div><button id="rf" style="margin-left:auto">↻</button></div>
+    <div class="row"><input id="hr" type="range" min="0" max="0" value="0"><span id="hrl">Now</span></div>
+    <details><summary>Manual wind</summary>
+      <div class="row"><input id="ws" type="range" min="0" max="20" step="0.5" value="5"><span id="wsv"></span></div>
+      <div class="row"><input id="wf" type="range" min="0" max="359" value="270"><span id="wfv"></span></div>
+    </details>
+  </div>
+  <details class="card"><summary>My club data (metres)</summary>
+    <table id="ct"></table>
+    <p class="mut">Lateral and depth are one standard deviation of your miss. The ellipse covers about 85% of shots.</p>
+  </details>
+  <p class="mut">Slottsbanan, Forsgårdens GK. First time per hole: pick “Set tee”, tap the tee, pick “Set green”, tap the green. Saved on this device. Wind is the 10 m forecast from Open-Meteo, adjusted with a simple model (about 1% carry per mph into the wind, 0.5% per mph with it, plus crosswind drift).</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)},R=Math.PI/180;
+function load(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+var O={lat:57.4946,lng:12.0975},kx=111320*Math.cos(O.lat*R),ky=110574;
+function xy(p){return{x:(p[1]-O.lng)*kx,y:(p[0]-O.lat)*ky}}
+function ll(p){return[O.lat+p.y/ky,O.lng+p.x/kx]}
+var clubs=load("sg.clubs",[{n:"Driver",c:215,l:16,d:9},{n:"3 Wood",c:195,l:13,d:8},{n:"5 Iron",c:160,l:8,d:6},{n:"7 Iron",c:140,l:6,d:5},{n:"9 Iron",c:120,l:5,d:4},{n:"Pitching Wedge",c:105,l:4,d:4}]);
+var holes=load("sg.holes",{});
+var S={hole:load("sg.hole",1),club:0,mode:"aim",ball:{x:0,y:0},aim:{x:0,y:150},ws:5,wf:270,gust:0};
+var F=null,base=0,names=["N","NE","E","SE","S","SW","W","NW"];
+function dir(d){return names[Math.round(d/45)%8]}
+
+var map=L.map("map",{zoomControl:false}).setView([O.lat,O.lng],16);
+L.control.zoom({position:"topright"}).addTo(map);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:20,maxNativeZoom:18,attribution:"Tiles © Esri"}).addTo(map);
+var line=L.polyline([],{color:"#fff",dashArray:"6 6",weight:2}).addTo(map),
+ el=L.polygon([],{color:"#fff",weight:2,fillOpacity:.25}).addTo(map),
+ mb=L.circleMarker([0,0],{radius:7,color:"#222",weight:2,fillColor:"#fff",fillOpacity:1}).addTo(map),
+ ma=L.circleMarker([0,0],{radius:9,color:"#ffd84d",weight:3,fill:false}).addTo(map),
+ ml=L.circleMarker([0,0],{radius:3,color:"#fff",fillOpacity:1}).addTo(map),
+ mg=L.circleMarker([0,0],{radius:6,color:"#fff",weight:2,fillColor:"#2f7d4f",fillOpacity:1});
+
+function calc(){
+ var c=clubs[S.club],dx=S.aim.x-S.ball.x,dy=S.aim.y-S.ball.y,sb=Math.atan2(dx,dy),w=S.ws*2.237,wf=S.wf*R,
+ hw=w*Math.cos(wf-sb),cw=w*Math.sin(sb-wf),f=Math.max(hw>0?1-0.01*hw:1-0.005*hw,.5),ce=c.c*f,dr=cw*c.c*0.0055,gs=1+0.01*w;
+ return{c:c,sb:sb,hw:hw,cw:cw,ce:ce,dr:dr,dist:Math.hypot(dx,dy),
+  land:{x:S.ball.x+ce*Math.sin(sb)+dr*Math.cos(sb),y:S.ball.y+ce*Math.cos(sb)-dr*Math.sin(sb)},sl:c.l*gs,sd:c.d*gs};
+}
+function draw(){
+ var r=calc(),p=[],sn=Math.sin(r.sb),cs=Math.cos(r.sb);
+ for(var i=0;i<48;i++){var t=i/48*2*Math.PI,a=2*r.sl*Math.cos(t),b=2*r.sd*Math.sin(t);p.push(ll({x:r.land.x+a*cs+b*sn,y:r.land.y-a*sn+b*cs}))}
+ el.setLatLngs(p);line.setLatLngs([ll(S.ball),ll(S.aim)]);mb.setLatLng(ll(S.ball));ma.setLatLng(ll(S.aim));ml.setLatLng(ll(r.land));
+ var g=(holes[S.hole]||{}).green,tg="";
+ if(g){var gp=xy(g);tg=" · to green <b>"+Math.round(Math.hypot(gp.x-S.ball.x,gp.y-S.ball.y))+" m</b>";mg.setLatLng(g);mg.addTo(map)}else map.removeLayer(mg);
+ var ms=r.hw/2.237,cm=r.cw/2.237;
+ $("hud").innerHTML="To aim <b>"+Math.round(r.dist)+" m</b>, plays like <b>"+Math.round(r.dist*r.c.c/r.ce)+" m</b>"+tg+
+  "<br><span class=mut>"+r.c.n+" carry "+r.c.c+" → "+Math.round(r.ce)+" m · "+(ms>=0?"headwind ":"tailwind ")+Math.abs(ms).toFixed(1)+" m/s · crosswind "+Math.abs(cm).toFixed(1)+" m/s "+(cm>=0?"left to right":"right to left")+" · drift "+Math.abs(Math.round(r.dr))+" m "+(r.dr>=0?"right":"left")+"</span>";
+ $("wa").style.transform="rotate("+(S.wf+180)+"deg)";
+ $("wt").textContent=S.ws.toFixed(1)+" m/s from "+dir(S.wf)+" ("+Math.round(S.wf)+"°)";
+ $("wd").textContent=S.gust?"Gusts up to "+S.gust.toFixed(1)+" m/s":"";
+ $("wsv").textContent=S.ws.toFixed(1)+" m/s";$("wfv").textContent=Math.round(S.wf)+"° "+dir(S.wf);
+}
+function setMode(m){S.mode=m;["aim","ball","tee","green"].forEach(function(k){$("m-"+k).className=k===m?"on":""})}
+["aim","ball","tee","green"].forEach(function(k){$("m-"+k).onclick=function(){setMode(k)}});
+map.on("click",function(e){
+ var pt=[e.latlng.lat,e.latlng.lng],p=xy(pt),h=holes[S.hole]=holes[S.hole]||{};
+ if(S.mode==="aim")S.aim=p;
+ else if(S.mode==="ball")S.ball=p;
+ else if(S.mode==="tee"){h.tee=pt;S.ball=p;save("sg.holes",holes)}
+ else{h.green=pt;S.aim=p;save("sg.holes",holes)}
+ draw();
+});
+$("land").onclick=function(){var r=calc();S.ball=r.land;draw()};
+function selHole(n){
+ S.hole=n;save("sg.hole",n);$("hl").textContent="Hole "+n;
+ var h=holes[n];
+ if(h&&h.tee&&h.green){S.ball=xy(h.tee);S.aim=xy(h.green);map.fitBounds([h.tee,h.green],{padding:[40,40],maxZoom:18});setMode("aim")}
+ else{if(h&&h.tee){S.ball=xy(h.tee)}setMode(h&&h.tee?"green":"tee")}
+ draw();
+}
+$("hp").onclick=function(){selHole(S.hole===1?18:S.hole-1)};
+$("hn").onclick=function(){selHole(S.hole===18?1:S.hole+1)};
+$("club").innerHTML=clubs.map(function(c,i){return "<option value=\""+i+"\">"+c.n+"</option>"}).join("");
+$("club").onchange=function(){S.club=+this.value;draw()};
+$("ct").innerHTML="<tr><th>Club</th><th>Carry</th><th>Lateral</th><th>Depth</th></tr>"+clubs.map(function(c,i){
+ return "<tr><td>"+c.n+"</td>"+["c","l","d"].map(function(f){return "<td><input type=\"number\" data-i=\""+i+"\" data-f=\""+f+"\" value=\""+c[f]+"\"></td>"}).join("")+"</tr>"}).join("");
+$("ct").oninput=function(e){var t=e.target;if(t.dataset.i){clubs[+t.dataset.i][t.dataset.f]=Math.max(1,+t.value||1);save("sg.clubs",clubs);draw()}};
+
+function hour(i){
+ var k=base+i;S.ws=F.wind_speed_10m[k];S.wf=F.wind_direction_10m[k];S.gust=F.wind_gusts_10m[k];
+ var d=new Date(F.time[k]);$("hrl").textContent=i===0?"Now":d.toLocaleString("en-GB",{weekday:"short",hour:"2-digit",minute:"2-digit"});
+ $("ws").value=S.ws;$("wf").value=S.wf;draw();
+}
+function wind(){
+ var u="https://api.open-meteo.com/v1/forecast?latitude="+O.lat+"&longitude="+O.lng+"&current=wind_speed_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&forecast_days=7&timezone=auto";
+ $("wt").textContent="Loading wind…";
+ fetch(u).then(function(r){return r.json()}).then(function(j){
+  F=j.hourly;var cur=j.current.time.slice(0,13);
+  base=Math.max(0,F.time.findIndex(function(t){return t.slice(0,13)>=cur}));
+  $("hr").max=Math.max(0,F.time.length-1-base);$("hr").value=0;hour(0);
+ }).catch(function(){$("wt").textContent="Wind offline: use manual wind";draw()});
+}
+$("hr").oninput=function(){if(F)hour(+this.value)};
+$("rf").onclick=wind;
+$("ws").oninput=function(){S.ws=+this.value;S.gust=0;draw()};
+$("wf").oninput=function(){S.wf=+this.value;draw()};
+selHole(S.hole);wind();
+if("serviceWorker" in navigator){try{navigator.serviceWorker.register("sw.js")}catch(e){}}
+})();
+</script>
+</body>
+</html>
